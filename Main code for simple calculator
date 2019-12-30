@@ -1,0 +1,263 @@
+module top (hz100,reset,pb,ss7,ss6,ss5,ss4,ss3,ss2,ss1,ss0,
+            left,right,red,green,blue);
+  // Do not modify any of these port definitions.
+  input hz100;
+  input reset;
+  input [20:0] pb;
+  output [7:0] ss7,ss6,ss5,ss4,ss3,ss2,ss1,ss0;
+  output [7:0] left,right;
+  output red,green,blue;
+  
+    //bcda8 u(.x(pb[15:8]), .y(pb[7:0]), .cin(pb[16]), .cout(red), .s(right[7:0]));
+    
+    reg [31:0] entry;   // value being entered
+    reg [31:0] saved;   // saved value to use as a second operand
+    reg [4:0] op;       // the selected operation
+    reg displaysaved;   // show entry or saved?
+    reg equalpressed;   // has equal been pressed?  
+    wire [4:0] key;     // outkey of scankey module  
+    wire pressed;       // strobe of scankey module
+    
+    scankey sk(.clk(hz100), .reset(reset), .inkeys(pb), .strobe(pressed), .outkey(key));
+    
+    bcdadd32 u1(.s(addresult), .x(saved), .y(entry));
+    bcdsub32 u(.s(subresult), .x(saved), .y(entry));
+    
+    reg [31:0] nextresult;
+    reg [31:0] addresult;
+    reg [31:0] subresult;
+    
+    always @ (*) begin
+        case (op)
+            0: nextresult <= entry;
+            19: nextresult <= addresult;
+            18: nextresult <= subresult;
+            default: nextresult <= saved;
+        endcase
+    end
+    
+    always @ (posedge pressed, posedge reset) begin
+        if (reset) begin
+            entry <= 0;
+            saved <= 0;
+            op <= 0;
+            displaysaved <= 0;
+            equalpressed <= 0;
+        end
+        else begin
+                if (key == 17 & displaysaved == 1'b0)
+                    entry <= entry >> 4;
+                else if (key == 16)
+                    begin
+                    saved <= nextresult;
+                    displaysaved <= 1;
+                    equalpressed <= 1;
+                    end
+                else if (key[4] == 1'b0 & key < 5'd10) begin
+                    if (equalpressed == 1'b1) begin
+                        entry <= {28'b0, key[3:0]};
+                        saved <= 32'b0;
+                        op <= 5'b0;
+                        displaysaved <= 1'b0;
+                        equalpressed <= 1'b0;
+                    end
+                    else if (equalpressed == 1'b0) begin
+                        if (entry[31:28] == 0) begin
+                            entry <= entry << 4 | key;
+                        end
+                        else if (entry[31:28] != 0) begin
+                            entry <= entry;
+                        end
+                        displaysaved <= 0;
+                    end
+                end
+                else if (key[4:1] == 4'b1001) begin
+                    if (equalpressed == 0) begin
+                        saved <= nextresult;
+                        op <= key;
+                        displaysaved <= 1;
+                        entry <= 0;
+                        equalpressed <= 0;
+                    end
+                end
+        end
+    end            
+    
+    wire [31:0] pos = displaysaved ? saved : entry;
+    wire isneg = pos[31:28] == 9;
+    wire [31:0] neg;
+    bcdsub32 inverter(.x(0), .y(pos), .s(neg));
+    wire [31:0] num = isneg ? neg : pos;
+    
+    assign ss7 = isneg ? 8'b01000000 : solve; 
+    
+    ssdec s7(.in(num[31:28]), .enable(|num[31:28]), .out(solve));
+    ssdec s6(.in(num[27:24]), .enable(|num[31:24]), .out(ss6));
+    ssdec s5(.in(num[23:20]), .enable(|num[31:20]), .out(ss5));
+    ssdec s4(.in(num[19:16]), .enable(|num[31:16]), .out(ss4));
+    ssdec s3(.in(num[15:12]), .enable(|num[31:12]), .out(ss3));
+    ssdec s2(.in(num[11:8]),  .enable(|num[31:8]), .out(ss2));
+    ssdec s1(.in(num[7:4]),   .enable(|num[31:4]), .out(ss1));
+    ssdec s0(.in(num[3:0]),   .enable(1'b1), .out(ss0)); 
+    
+endmodule
+
+module fa(x, y, cin, cout, s); // Full Adder 
+    input x, y, cin;
+    output cout, s;
+    
+    assign s = x ^ y ^ cin;
+    assign cout = x & y | x & cin | y & cin;
+    
+endmodule
+
+module fa4(x, y, cin, cout, s); // 4 Full Adders
+    input [3:0] x;
+    input [3:0] y;
+    input cin;
+    output cout;
+    output [3:0] s;
+    
+    wire  w1, w2, w3;
+    
+    fa add0(.x(x[0]), .y(y[0]), .cin(cin), .cout(w1), .s(s[0]));
+    fa add1(.x(x[1]), .y(y[1]), .cin(w1), .cout(w2), .s(s[1]));
+    fa add2(.x(x[2]), .y(y[2]), .cin(w2), .cout(w3), .s(s[2]));
+    fa add3(.x(x[3]), .y(y[3]), .cin(w3), .cout(cout), .s(s[3]));
+
+endmodule 
+
+module bcda4(x, y, cin, cout, s); // 4 BCD Adder that corrects addition above 4'b1001 (decimal 9).
+    input [3:0] x;
+    input [3:0] y;
+    input cin;
+    output cout;
+    output [3:0] s;
+    
+    wire  w1;
+    wire [3:0] w2;
+    
+    //First 4 bit adder
+    fa4 add0(.x(x[3:0]), .y(y[3:0]), .cin(cin), .cout(w1), .s(w2));
+
+    //Logic
+    assign cout = w1 | w2[3] & w2[2] | w2[3] & w2[1];
+    
+    //Second 4 bit adder
+    fa4 add1(.x({1'b0, cout, cout, 1'b0}), .y(w2), .cin(0), .cout(cout1), .s(s));
+
+endmodule 
+
+module bcda8(x, y, cin, cout, s); // Added BCD Adder
+    input [7:0] x;
+    input [7:0] y;
+    input cin;
+    output cout;
+    output [7:0] s;
+  
+    wire w1;
+    //fa4 add0(.x(x[3:0]), .y(y[3:0]), .cin(cin), .cout(w1), .s(s[3:0]));
+    //fa4 add1(.x(x[7:4]), .y(y[7:4]), .cin(w1), .cout(cout), .s(s[7:4]));
+    
+    bcda4 add0(.x(x[3:0]), .y(y[3:0]), .cin(cin), .cout(w1), .s(s[3:0]));
+    bcda4 add1(.x(x[7:4]), .y(y[7:4]), .cin(w1), .cout(cout), .s(s[7:4]));
+endmodule  
+
+module ssdec(in, enable, out); // Sets the digits on the FPGA. 
+  input [3:0]in; //input 0
+  input enable;
+  output [6:0]out; //output
+  
+  assign out[6] = enable == 1'b1 ? ~in[2]&in[1] | in[1]&~in[0] | in[3]&~in[2] | in[3]&in[0] | ~in[3]&in[2]&~in[1] : 0;
+  assign out[5] = enable == 1'b1 ? in[3]&~in[2] | ~in[1]&~in[0] | in[2]&~in[0] | in[3]&in[1] | ~in[3]&in[2]&~in[1] : 0;
+  assign out[4] = enable == 1'b1 ? ~in[2]&~in[0] | in[1]&~in[0] | in[3]&in[1] | in[3]&in[2] : 0;
+  assign out[3] = enable == 1'b1 ? in[3]&~in[1] | ~in[3]&~in[2]&~in[0] | ~in[2]&in[1]&in[0] | in[2]&~in[1]&in[0] | in[2]&in[1]&~in[0] : 0;
+  assign out[2] = enable == 1'b1 ? ~in[3]&~in[1] | ~in[3]&in[0] | ~in[1]&in[0] | ~in[3]&in[2] | in[3]&~in[2] : 0;
+  assign out[1] = enable == 1'b1 ? ~in[3]&~in[2] | ~in[2]&~in[0] | ~in[3]&~in[1]&~in[0] | ~in[3]&in[1]&in[0] | in[3]&~in[1]&in[0] : 0;
+  assign out[0] = enable == 1'b1 ? ~in[3]&in[1] | ~in[2]&~in[0] | in[2]&in[1] | in[3]&~in[0] | ~in[3]&in[2]&in[0] | in[3]&~in[2]&~in[1] : 0;
+  
+endmodule
+  
+module scankey(clk, reset, inkeys, strobe, outkey); // Creates a delay between 2 flip flops and sets the inkeys for FPGA.
+    input clk;
+    input reset;
+    input [19:0] inkeys;
+    output strobe;
+    output reg [4:0] outkey;
+    reg [4:0] next_outkey;
+    
+    wire keyclk;
+    
+    assign keyclk = |(inkeys);
+    
+    reg [1:0] delay;
+    
+    always @ (posedge clk, posedge reset) begin
+    if (reset == 1'b1) begin
+        outkey <= 5'b0;
+        delay <= 2'b00;
+        strobe <= 1'b0;
+    end
+    else begin
+        outkey <= next_outkey;
+        delay <= (delay << 1) | keyclk;
+        strobe <= delay[1];
+        end
+    end
+    
+    always @ (inkeys) begin
+        casez (inkeys)
+            20'b1???????????????????: {next_outkey} = 5'b10011;
+            20'b01??????????????????: {next_outkey} = 5'b10010;
+            20'b001?????????????????: {next_outkey} = 5'b10001;
+            20'b0001????????????????: {next_outkey} = 5'b10000;
+            20'b00001???????????????: {next_outkey} = 5'b01111;
+            20'b000001??????????????: {next_outkey} = 5'b01110;
+            20'b0000001?????????????: {next_outkey} = 5'b01101;
+            20'b00000001????????????: {next_outkey} = 5'b01100;
+            20'b000000001???????????: {next_outkey} = 5'b01011;
+            20'b0000000001??????????: {next_outkey} = 5'b01010;
+            20'b00000000001?????????: {next_outkey} = 5'b01001;
+            20'b000000000001????????: {next_outkey} = 5'b01000;
+            20'b0000000000001???????: {next_outkey} = 5'b00111;
+            20'b00000000000001??????: {next_outkey} = 5'b00110;
+            20'b000000000000001?????: {next_outkey} = 5'b00101;
+            20'b0000000000000001????: {next_outkey} = 5'b00100;
+            20'b00000000000000001???: {next_outkey} = 5'b00011;
+            20'b000000000000000001??: {next_outkey} = 5'b00010;
+            20'b0000000000000000001?: {next_outkey} = 5'b00001;
+            20'b00000000000000000001: {next_outkey} = 5'b00000;
+            default:                  {next_outkey} = 5'b00000;
+        endcase
+    end
+    
+    
+endmodule 
+
+module bcdadd32(s, x, y); // Full BCD Adder
+    input [31:0] x;
+    input [31:0] y;
+    output [31:0] s;
+    
+    wire w1, w2, w3;
+    
+    bcda8 u0(.x(x[7:0]), .y(y[7:0]), .cin(1'b0), .cout(w1), .s(s[7:0]));
+    bcda8 u1(.x(x[15:8]), .y(y[15:8]), .cin(w1), .cout(w2), .s(s[15:8]));
+    bcda8 u2(.x(x[23:16]), .y(y[23:16]), .cin(w2), .cout(w3), .s(s[23:16]));
+    bcda8 u3(.x(x[31:24]), .y(y[31:24]), .cin(w3), .cout(cout), .s(s[31:24]));
+    
+endmodule
+
+module bcdsub32(s, x, y); // Full BCD Subtracter
+    input [31:0] x;
+    input [31:0] y;
+    output [31:0] s;
+    
+    wire w1, w2, w3;
+    
+    bcda8 u0(.x(x[7:0]), .y(8'h99-y[7:0]), .cin(1'b1), .cout(w1), .s(s[7:0]));
+    bcda8 u1(.x(x[15:8]), .y(8'h99-y[15:8]), .cin(w1), .cout(w2), .s(s[15:8]));
+    bcda8 u2(.x(x[23:16]), .y(8'h99-y[23:16]), .cin(w2), .cout(w3), .s(s[23:16]));
+    bcda8 u3(.x(x[31:24]), .y(8'h99-y[31:24]), .cin(w3), .cout(cout), .s(s[31:24]));
+    
+endmodule
